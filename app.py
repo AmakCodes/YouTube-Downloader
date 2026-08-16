@@ -288,7 +288,17 @@ def ydl_common_opts() -> dict:
         "extractor_args": {
             "youtube": {
                 "player_client": ["web", "android"],
-            }
+            },
+            # Auto-generated "Mix"/Radio playlists (IDs starting with RD)
+            # trip yt-dlp's extra auth-check, which tries to confirm the
+            # loaded cookies belong to the same channel before trusting a
+            # playlist extraction — and fails hard if that webpage probe
+            # doesn't succeed, even for a totally public mix. We're not
+            # downloading anyone's private content here, so skip that
+            # check rather than have every Mix URL error out.
+            "youtubetab": {
+                "skip": ["authcheck"],
+            },
         },
         "http_headers": {
             "User-Agent": (
