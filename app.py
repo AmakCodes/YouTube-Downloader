@@ -519,21 +519,34 @@ def estimate_filesize(info: dict, quality: str = "best"):
     def fsize(f):
         if not f:
             return 0
-        return f.get("filesize") or f.get("filesize_approx") or 0
+        size = f.get("filesize") or f.get("filesize_approx")
+        if size:
+            return size
+        # YouTube's adaptive formats very often carry no size field at
+        # all (this is common enough that it used to make every quality
+        # collapse to the same fallback number below). When that
+        # happens, estimate from bitrate * duration instead — the same
+        # approach yt-dlp itself uses to compute filesize_approx, just
+        # applied here for the formats yt-dlp didn't already do it for.
+        tbr = f.get("tbr")
+        duration = info.get("duration")
+        if tbr and duration:
+            return int(tbr * 1000 / 8 * duration)
+        return 0
 
     formats = info.get("formats") or []
 
     if quality == "audio":
         audio_only = [f for f in formats if f.get("acodec") not in (None, "none")
-                      and f.get("vcodec") in (None, "none") and fsize(f)]
+                      and f.get("vcodec") in (None, "none")]
         if audio_only:
             best_audio = max(audio_only, key=lambda f: f.get("abr") or 0)
             return fsize(best_audio) or None
-        return info.get("filesize") or info.get("filesize_approx")
+        return fsize(info) or None
 
-    video_only = [f for f in formats if f.get("vcodec") not in (None, "none") and fsize(f)]
+    video_only = [f for f in formats if f.get("vcodec") not in (None, "none")]
     audio_only = [f for f in formats if f.get("acodec") not in (None, "none")
-                  and f.get("vcodec") in (None, "none") and fsize(f)]
+                  and f.get("vcodec") in (None, "none")]
 
     if quality == "worst":
         chosen_video = min(video_only, key=lambda f: f.get("height") or 9999) if video_only else None
@@ -549,7 +562,7 @@ def estimate_filesize(info: dict, quality: str = "best"):
 
     total = fsize(chosen_video) + fsize(chosen_audio) if (chosen_video or chosen_audio) else 0
     if not total:
-        total = info.get("filesize") or info.get("filesize_approx") or 0
+        total = fsize(info)
     return total or None
 
 
