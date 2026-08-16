@@ -149,17 +149,16 @@ def _snapshot_files(folder: Path):
 
 
 QUALITY_FORMATS = {
-    # YouTube only serves pre-muxed (single-file) formats up to ~720p.
-    # 1080p and above requires selecting the best video-only and audio-only
-    # streams separately and letting FFmpeg merge them, hence the
-    # "bestvideo+bestaudio" pattern below instead of a plain "best" filter.
-    "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
-    "1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-    "720p": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]",
-    "480p": "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]",
-    "360p": "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]",
-    "audio": "bestaudio/best",
-    "worst": "worst[ext=mp4]/worst",
+    # Kept only as the set of valid quality keys accepted by the API
+    # (used for request validation) — the actual yt-dlp format options
+    # now come from build_format_opts() below, not these strings.
+    "best": None,
+    "1080p": None,
+    "720p": None,
+    "480p": None,
+    "360p": None,
+    "audio": None,
+    "worst": None,
 }
 
 SKIP_EXTENSIONS = {".part", ".ytdl", ".json", ".jpg", ".png", ".webp", ".description"}
@@ -399,6 +398,41 @@ def api_set_folder():
 QUALITY_HEIGHT_CAPS = {"1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
 
 
+def build_format_opts(quality: str) -> dict:
+    """yt-dlp `format` (+ optional `format_sort`) options for a quality choice.
+
+    The previous approach used bracket filters, e.g.
+    "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]".
+    Bracket filters *exclude* any format that doesn't satisfy every
+    condition — which is a problem because the "android" player client
+    (used to dodge YouTube's bot-check on cloud IPs) often returns a
+    format list with missing/sparse metadata (no ext tag, no height on
+    some entries). That can make every option in the fallback chain
+    match zero formats, surfacing as "Requested format is not available"
+    even though yt-dlp technically has usable formats to work with.
+
+    format_sort works differently: "bv*+ba/b" matches virtually any
+    format combination that exists at all (it only fails if literally
+    nothing downloadable was returned), and format_sort just *prefers*
+    the format closest to the target height rather than excluding
+    anything that doesn't match exactly. This is the combination yt-dlp's
+    own docs recommend over manual bracket filtering for exactly this
+    kind of cross-client reliability.
+    """
+    if quality == "audio":
+        return {"format": "bestaudio/best"}
+    if quality == "worst":
+        return {"format": "wv*+wa/w", "format_sort": ["+size"]}
+    opts = {"format": "bv*+ba/b"}
+    cap = QUALITY_HEIGHT_CAPS.get(quality)  # None for "best" = no cap
+    if cap:
+        # "res:H" prefers the format closest to (at or below) H over
+        # both higher and lower resolutions, without excluding anything
+        # if nothing happens to fit under the cap.
+        opts["format_sort"] = [f"res:{cap}"]
+    return opts
+
+
 def estimate_filesize(info: dict, quality: str = "best"):
     """Best-effort size estimate for the info card, matching whichever
     quality is currently selected (mirrors QUALITY_FORMATS' logic closely
@@ -569,7 +603,7 @@ def _run_download(job_id, url, quality, playlist):
             download_dir.mkdir(exist_ok=True)
             update_job(job_id, message=f"Playlist: {title}")
 
-        format_str = QUALITY_FORMATS[quality]
+        format_opts = build_format_opts(quality)
         outtmpl = str(download_dir / ("%(playlist_index)s - %(title)s.%(ext)s" if playlist else "%(title)s.%(ext)s"))
 
         ydl_opts = ydl_common_opts()
@@ -582,7 +616,6 @@ def _run_download(job_id, url, quality, playlist):
             # instead of one at a time — this is what actually speeds up the
             # download itself (separate from page/UI speed).
             "concurrent_fragment_downloads": 8,
-            "format": format_str,
             "outtmpl": outtmpl,
             "progress_hooks": [lambda d: _progress_hook(job_id, d)],
             "writedescription": False,
@@ -591,6 +624,7 @@ def _run_download(job_id, url, quality, playlist):
             "write_all_thumbnails": False,
             "write_annotations": False,
         })
+        ydl_opts.update(format_opts)
         if quality == "audio":
             ydl_opts["postprocessors"] = [{
                 "key": "FFmpegExtractAudio",
