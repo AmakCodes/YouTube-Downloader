@@ -256,15 +256,18 @@ def ydl_common_opts() -> dict:
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": True,
-        # Datacenter IPs (Render/Railway/AWS/etc.) get an extra
-        # "confirm you're not a bot" check from YouTube's default web
-        # client that residential home IPs rarely see. The android/ios
-        # internal clients use a different auth path that usually
-        # skips it. Falls back to web automatically if these don't
-        # have a format available.
+        # With valid cookies (see COOKIE_FILE below), the normal "web"
+        # client authenticates fine and exposes the full DASH format
+        # list (needed for our height-capped quality selectors). The
+        # "android" client was previously prioritized to dodge YouTube's
+        # bot-check on datacenter IPs, but it also returns a much
+        # smaller/different format list that can fail our quality
+        # filters with "Requested format is not available" — so once
+        # cookies are present, web goes first and android is only a
+        # fallback if web is ever blocked (e.g. cookies expired).
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios", "web"],
+                "player_client": ["web", "android"],
             }
         },
         "http_headers": {
@@ -274,6 +277,12 @@ def ydl_common_opts() -> dict:
                 "Chrome/124.0.0.0 Safari/537.36"
             )
         },
+        # Fail fast instead of hanging: a stalled connection to YouTube
+        # should surface as a clear error within seconds, not tie up
+        # the request until the browser or platform proxy gives up.
+        "socket_timeout": 15,
+        "retries": 2,
+        "extractor_retries": 1,
     }
     if COOKIE_FILE.exists():
         opts["cookiefile"] = str(COOKIE_FILE)
