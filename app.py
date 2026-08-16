@@ -156,6 +156,8 @@ QUALITY_FORMATS = {
     # (used for request validation) — the actual yt-dlp format options
     # now come from build_format_opts() below, not these strings.
     "best": None,
+    "2160p": None,
+    "1440p": None,
     "1080p": None,
     "720p": None,
     "480p": None,
@@ -464,7 +466,7 @@ def api_set_folder():
     return jsonify({"folder": str(path)})
 
 
-QUALITY_HEIGHT_CAPS = {"1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
+QUALITY_HEIGHT_CAPS = {"2160p": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
 
 
 def build_format_opts(quality: str) -> dict:
