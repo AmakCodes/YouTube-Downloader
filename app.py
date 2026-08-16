@@ -256,18 +256,17 @@ def ydl_common_opts() -> dict:
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": True,
-        # With valid cookies (see COOKIE_FILE below), the normal "web"
-        # client authenticates fine and exposes the full DASH format
-        # list (needed for our height-capped quality selectors). The
-        # "android" client was previously prioritized to dodge YouTube's
-        # bot-check on datacenter IPs, but it also returns a much
-        # smaller/different format list that can fail our quality
-        # filters with "Requested format is not available" — so once
-        # cookies are present, web goes first and android is only a
-        # fallback if web is ever blocked (e.g. cookies expired).
+        # "android" goes first because Render's IPs (and most cloud/
+        # datacenter IPs) trip YouTube's bot-check on the "web" client —
+        # even with valid cookies present, "Sign in to confirm you're
+        # not a bot" comes back if web is tried first from a datacenter
+        # IP. android sidesteps that check. Its trade-off is a smaller/
+        # different format list, which is why "web" stays second as a
+        # fallback for formats android doesn't expose (e.g. certain
+        # 1080p+ combos) — cookies apply to both either way.
         "extractor_args": {
             "youtube": {
-                "player_client": ["web", "android"],
+                "player_client": ["android", "web"],
             }
         },
         "http_headers": {
