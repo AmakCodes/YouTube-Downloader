@@ -286,8 +286,9 @@
         resetControls();
 
         if (job.status === 'complete') {
-          statusLine.textContent = 'Download complete!';
-          showToast('Download complete', 'success');
+          const shortfall = /wasn.t available/i.test(job.message || '');
+          statusLine.textContent = job.message || 'Download complete!';
+          showToast(job.message || 'Download complete', shortfall ? 'error' : 'success');
           loadDownloads();
           const finishedFiles = (job.result && job.result.files) || [];
           finishedFiles.forEach((f) => triggerDownload(f.relpath));

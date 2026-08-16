@@ -308,7 +308,7 @@ def check_ffmpeg() -> bool:
     return found
 
 
-def ydl_common_opts() -> dict:
+def ydl_common_opts(player_clients=None) -> dict:
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -324,9 +324,15 @@ def ydl_common_opts() -> dict:
         # (bv*+ba wasn't matching anything, so our selector fell through
         # to plain /b). "android" stays second, purely as a fallback in
         # case cookies expire again and "web" starts getting bot-checked.
+        #
+        # Callers that just need metadata (fetch-info) can pass
+        # player_clients=["web"] to skip the android round-trip entirely
+        # — it's the second client query (plus "web"'s own JS-challenge
+        # solve) that makes full extraction slow, and fetch-info doesn't
+        # need android's fallback formats, only download does.
         "extractor_args": {
             "youtube": {
-                "player_client": ["web", "android"],
+                "player_client": player_clients or ["web", "android"],
             },
             # Auto-generated "Mix"/Radio playlists (IDs starting with RD)
             # trip yt-dlp's extra auth-check, which tries to confirm the
@@ -584,7 +590,13 @@ def api_fetch_info():
     playlist = is_playlist_url(url)
     if not playlist:
         url = strip_mix_params(url)
-    opts = ydl_common_opts()
+    # Single videos: try "web" alone first — it's the client with the
+    # full DASH format list anyway, and skipping the "android" round-trip
+    # (plus its own separate JS-challenge solve) is what actually makes
+    # this noticeably faster. Only fall back to the full web+android set
+    # if the fast path comes back with nothing, so a video that genuinely
+    # needs android's formats still works, just slower.
+    opts = ydl_common_opts(player_clients=None if playlist else ["web"])
     if playlist:
         opts.update({"extract_flat": True, "playlistend": 10})
 
@@ -593,6 +605,14 @@ def api_fetch_info():
             info = ydl.extract_info(url, download=False)
     except Exception as e:
         return jsonify({"error": clean_error(e)}), 400
+
+    if not playlist and (not info or not info.get("formats")):
+        try:
+            fallback_opts = ydl_common_opts()  # web + android
+            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            return jsonify({"error": clean_error(e)}), 400
 
     if not info:
         return jsonify({"error": "Failed to fetch video information"}), 400
@@ -1050,7 +1070,7 @@ def _run_download(job_id, url, quality, playlist):
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             update_job(job_id, ydl=ydl)
-            ydl.extract_info(url, download=True)
+            download_info = ydl.extract_info(url, download=True)
 
         job = get_job(job_id)
         if job["cancelled"]:
@@ -1090,7 +1110,25 @@ def _run_download(job_id, url, quality, playlist):
                 update_job(job_id, status="error", message="Download failed",
                            error=f"No files were downloaded — {detail}", done=True)
             else:
-                update_job(job_id, status="complete", message="Download complete!", percentage=100.0,
+                message = "Download complete!"
+                # If a specific quality was requested but yt-dlp actually
+                # landed well below it, that's almost always because
+                # YouTube's "web" client got bot-checked or the loaded
+                # cookies expired mid-session — leaving only "android"'s
+                # low-res progressive formats in the merged list (see the
+                # comment on ydl_common_opts). Rather than silently
+                # reporting success at the wrong resolution, say so.
+                if not playlist and quality not in ("audio", "worst", "best"):
+                    cap = QUALITY_HEIGHT_CAPS.get(quality)
+                    achieved = (download_info or {}).get("height")
+                    if cap and (not achieved or achieved < cap * 0.9):
+                        got = f"{achieved}p" if achieved else "a lower resolution"
+                        message = (
+                            f"Downloaded at {got} — {quality} wasn't available for this "
+                            f"video right now (often expired cookies or a YouTube bot-check "
+                            f"limiting formats). Try Test Cookies, or re-upload cookies.txt."
+                        )
+                update_job(job_id, status="complete", message=message, percentage=100.0,
                            done=True, result={"folder": str(download_dir), "files": finished_files})
     except Exception as e:
         job = get_job(job_id)
