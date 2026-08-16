@@ -35,6 +35,22 @@ DOWNLOAD_ROOT = BASE_DIR / "downloads"
 DOWNLOAD_ROOT.mkdir(exist_ok=True)
 COOKIE_FILE = BASE_DIR / "cookies.txt"
 
+# ---------------------------------------------------------------------------
+# Cookies can also be provided via an env var instead of the upload form.
+# Useful on hosts like Render where the free-tier disk isn't persistent —
+# an uploaded cookies.txt disappears on the next deploy/restart, but an
+# env var is set once in the dashboard and re-applied automatically every
+# time the app boots. Paste the *entire contents* of a Netscape-format
+# cookies.txt file (multi-line is fine) into an env var named
+# YTDLP_COOKIES, and this writes it to COOKIE_FILE on startup.
+# ---------------------------------------------------------------------------
+_env_cookies = os.environ.get("YTDLP_COOKIES")
+if _env_cookies:
+    COOKIE_FILE.write_text(_env_cookies, encoding="utf-8")
+    print(f"[startup] YTDLP_COOKIES found ({len(_env_cookies)} chars) -> wrote {COOKIE_FILE}", flush=True)
+else:
+    print("[startup] YTDLP_COOKIES env var not set or empty — cookies.txt not written from env", flush=True)
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB, cookie file uploads only
 
@@ -763,6 +779,57 @@ def api_update_ytdlp():
         return jsonify({"error": clean_error(result.stderr[:300] or "Unknown error")}), 500
     except Exception as e:
         return jsonify({"error": clean_error(e)}), 500
+@app.route("/api/test-cookies", methods=["POST"])
+def api_test_cookies():
+    """Test if uploaded cookies are working"""
+    if not COOKIE_FILE.exists():
+        return jsonify({"ok": False, "message": "No cookies file uploaded yet"}), 400
+    
+    try:
+        opts = ydl_common_opts()
+        opts.update({
+            "quiet": True,
+            "extract_flat": True,
+            "playlistend": 1,
+        })
+        
+        # Test with a public video that sometimes requires cookies
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info("https://www.youtube.com/watch?v=jNQXAC9IVRw", download=False)
+            
+        return jsonify({
+            "ok": True,
+            "message": "✅ Cookies are working!",
+            "video": info.get("title", "Unknown video")
+        })
+    except Exception as e:
+        error_msg = clean_error(e)
+        if "sign in" in error_msg.lower() or "confirm" in error_msg.lower():
+            return jsonify({
+                "ok": False, 
+                "message": "❌ Cookies expired or invalid. Please re-upload fresh cookies."
+            }), 400
+        return jsonify({
+            "ok": False, 
+            "message": f"❌ Error: {error_msg[:100]}"
+        }), 400
+@app.route("/api/cookie-status")
+def api_cookie_status():
+    """Check if cookies file exists and seems valid"""
+    if not COOKIE_FILE.exists():
+        return jsonify({"has_cookies": False, "valid": False, "message": "No cookies uploaded"})
+    
+    # Check if file has content
+    try:
+        with open(COOKIE_FILE, 'r') as f:
+            content = f.read().strip()
+            if not content:
+                return jsonify({"has_cookies": True, "valid": False, "message": "Cookies file is empty"})
+            if "# Netscape HTTP Cookie File" in content:
+                return jsonify({"has_cookies": True, "valid": True, "message": "Cookies file present"})
+            return jsonify({"has_cookies": True, "valid": False, "message": "Invalid cookie format"})
+    except:
+        return jsonify({"has_cookies": True, "valid": False, "message": "Could not read cookies file"})
 
 
 _load_registry()

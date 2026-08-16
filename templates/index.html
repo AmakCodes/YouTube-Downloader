@@ -45,6 +45,7 @@
       <span id="chip-cookies" class="chip">
         <span class="chip__dot"></span> Cookies
       </span>
+      
     </div>
   </header>
 
@@ -132,18 +133,55 @@
           </button>
         </div>
 
-        <label class="field-label">Cookies</label>
+        <label class="field-label">Cookies (Required for age-restricted/private videos)</label>
         <div class="field-row">
           <input id="cookie-input" class="input" type="file" accept=".txt">
         </div>
+
         <div class="btn-row">
           <button id="btn-upload-cookies" class="btn btn--ghost btn--small">
-            <svg viewBox="0 0 24 24" fill="none"><path d="M12 16V4M12 4l-4 4M12 4l4 4M5 16v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            Import cookies
+            <svg viewBox="0 0 24 24" fill="none" width="15" height="15"><path d="M12 16V4M12 4l-4 4M12 4l4 4M5 16v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Upload cookies.txt
+          </button>
+          <button id="btn-test-cookies" class="btn btn--ghost btn--small">
+            <svg viewBox="0 0 24 24" fill="none" width="15" height="15">
+              <path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Test Cookies
           </button>
         </div>
-        <p class="hint">Needed for age-restricted or private videos. Uses the same cookies.txt format as the desktop app.</p>
-      </div>
+
+        <div class="cookies-helper" style="margin-top: 14px; padding: 14px; background: var(--surface-2); border-radius: var(--radius-sm); border: 1px solid var(--border);">
+  <details style="cursor: pointer;">
+    <summary style="font-size: 12px; font-weight: 600; color: var(--text-muted);">
+      <span style="color: var(--go);">📖</span> How to get cookies.txt
+    </summary>
+    <div style="margin-top: 12px; font-size: 13px; color: var(--text-muted); line-height: 1.6;">
+      <p style="margin: 0 0 8px 0;"><strong>Method 1: Browser Extension (Easiest)</strong></p>
+      <ol style="margin: 0 0 12px 0; padding-left: 20px;">
+        <li>Install extension for your browser:
+          <ul style="margin: 4px 0; padding-left: 20px;">
+            <li><a href="https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" style="color: var(--go);">Get cookies.txt LOCALLY</a> (Chrome/Edge)</li>
+            <li><a href="https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/" target="_blank" style="color: var(--go);">cookies.txt</a> (Firefox)</li>
+          </ul>
+        </li>
+        <li>Go to <a href="https://youtube.com" target="_blank" style="color: var(--go);">YouTube.com</a> and log in</li>
+        <li>Click the extension icon → Export → Save cookies.txt</li>
+        <li>Upload the file using the button above</li>
+      </ol>
+      
+      <p style="margin: 0 0 8px 0;"><strong>Method 2: Command Line (Advanced)</strong></p>
+      <pre style="background: var(--surface-3); padding: 10px; border-radius: 6px; font-size: 12px; overflow-x: auto; margin: 0 0 8px 0;">
+yt-dlp --cookies-from-browser chrome --cookies cookies.txt https://youtube.com/watch?v=VIDEO_ID</pre>
+      <p style="margin: 0; font-size: 12px;">Then upload the generated cookies.txt file.</p>
+    </div>
+  </details>
+</div>
+
+<p class="hint" style="margin-top: 8px;">
+  <span style="color: var(--warn);">⚠️</span> Cookies expire after a few days. Re-upload if downloads stop working.
+</p>
+  </div>
 
     </section>
 

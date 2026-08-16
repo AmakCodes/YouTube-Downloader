@@ -362,6 +362,42 @@
   // The <select> stays the source of truth (startDownload reads its
   // .value); pills just drive it visually on small screens.
   let refetchTimer = null;
+  // Add this function to app.js
+async function testCookies() {
+    const btn = document.getElementById('btn-test-cookies');
+    btn.disabled = true;
+    btn.textContent = 'Testing…';
+    
+    try {
+        const result = await api('/api/test-cookies', { method: 'POST' });
+        if (result.ok) {
+            showToast(result.message, 'success');
+            refreshStatus();
+        } else {
+            showToast(result.message || 'Cookies not working', 'error');
+        }
+    } catch (e) {
+        showToast(e.message || 'Failed to test cookies', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = `
+            <svg viewBox="0 0 24 24" fill="none" width="15" height="15">
+                <path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Test Cookies
+        `;
+    }
+}
+
+// Add event listener (place this in your DOMContentLoaded or at the bottom)
+document.addEventListener('DOMContentLoaded', function() {
+    // ... existing code ...
+    
+    const btnTestCookies = document.getElementById('btn-test-cookies');
+    if (btnTestCookies) {
+        btnTestCookies.addEventListener('click', testCookies);
+    }
+});
 
   function setQuality(value) {
     qualitySelect.value = value;
@@ -377,6 +413,7 @@
       refetchTimer = setTimeout(fetchInfo, 250);
     }
   }
+
 
   if (qualityPills) {
     qualityPills.addEventListener('click', (e) => {
