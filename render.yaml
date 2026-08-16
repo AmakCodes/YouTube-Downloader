@@ -1,0 +1,16 @@
+# Exported from Render on 2026-08-13T13:26:37Z
+version: "1"
+projects:
+- name: My project
+  environments:
+  - name: Production
+    services:
+    - type: web
+      name: amak
+      runtime: docker
+      repo: https://github.com/AmakCodes/YouTube-Downloader
+      plan: free
+      region: ohio
+      dockerContext: .
+      dockerfilePath: ./Dockerfile
+      autoDeployTrigger: commit
