@@ -226,6 +226,8 @@
           statusLine.textContent = 'Download complete!';
           showToast('Download complete', 'success');
           loadDownloads();
+          const finishedFiles = (job.result && job.result.files) || [];
+          finishedFiles.forEach((f) => triggerDownload(f.relpath));
         } else if (job.status === 'cancelled') {
           statusLine.textContent = 'Download cancelled';
           resetProgress();
@@ -301,6 +303,7 @@
           <td data-label="Size">${f.size}</td>
           <td data-label="Date">${f.date}</td>
           <td class="table__actions" data-label="">
+            <a class="table__link" href="/api/downloads/${encodePath(f.relpath)}" download>Download</a>
             <a class="table__link" href="/api/downloads/play/${encodePath(f.relpath)}" target="_blank" rel="noopener">Play</a>
             <button class="table__link table__link--btn" data-reveal="${encodePath(f.relpath)}" type="button">Open in folder</button>
           </td>
@@ -311,6 +314,18 @@
 
   function encodePath(relpath) {
     return relpath.split('/').map(encodeURIComponent).join('/');
+  }
+
+  function triggerDownload(relpath) {
+    // A hidden <a download> click forces the browser to save the file
+    // straight to disk (its normal downloads folder / download bar),
+    // instead of navigating to or streaming the file inline.
+    const a = document.createElement('a');
+    a.href = `/api/downloads/${encodePath(relpath)}`;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 
   function escapeHtml(s) {

@@ -446,6 +446,8 @@ def estimate_filesize(info: dict, quality: str = "best"):
     video-only + audio-only streams the selected quality would actually use.
     """
     def fsize(f):
+        if not f:
+            return 0
         return f.get("filesize") or f.get("filesize_approx") or 0
 
     formats = info.get("formats") or []
@@ -656,8 +658,22 @@ def _run_download(job_id, url, quality, playlist):
                 if Path(p).suffix not in SKIP_EXTENSIONS
             }
             register_downloaded_files(new_files)
+
+            # Relative paths (against the *root* download folder, not the
+            # per-playlist subfolder) so the frontend can hit
+            # /api/downloads/<relpath> to trigger a real browser download
+            # for each file that just finished.
+            root = get_download_dir().resolve()
+            finished_files = []
+            for p in sorted(new_files):
+                try:
+                    relpath = Path(p).resolve().relative_to(root)
+                except ValueError:
+                    continue
+                finished_files.append({"name": Path(p).name, "relpath": str(relpath)})
+
             update_job(job_id, status="complete", message="Download complete!", percentage=100.0,
-                       done=True, result={"folder": str(download_dir)})
+                       done=True, result={"folder": str(download_dir), "files": finished_files})
     except Exception as e:
         job = get_job(job_id)
         if not job["cancelled"]:
