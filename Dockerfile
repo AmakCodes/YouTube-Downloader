@@ -1,9 +1,19 @@
 FROM python:3.12-slim
 
-# yt-dlp needs ffmpeg on PATH for audio extraction and 1080p+ merges.
+# yt-dlp needs:
+#  - ffmpeg on PATH for audio extraction and 1080p+ merges
+#  - a JS runtime on PATH (Deno here) to solve YouTube's signature/"n"
+#    challenge. As of 2026, YouTube forces "SABR streaming" and strips
+#    the real format URLs from every client's response unless yt-dlp can
+#    run its JS challenge-solver — without a JS runtime present, this
+#    surfaces as "Requested format is not available" even though
+#    extraction and cookies are working fine. Deno is used because it's
+#    a single static binary — no separate npm/node_modules step needed.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends ffmpeg curl unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh \
+    && chmod +x /usr/local/bin/deno
 
 WORKDIR /app
 COPY requirements.txt .
