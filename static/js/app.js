@@ -59,7 +59,7 @@
       ...options,
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Request failed');
+    if (!res.ok) throw new Error(data.error || data.message || 'Request failed');
     return data;
   }
 
