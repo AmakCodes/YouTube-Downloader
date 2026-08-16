@@ -147,8 +147,13 @@
         infoChannel.textContent = info.uploader;
         infoViews.textContent = `${info.video_count} videos`;
         infoSize.textContent = '—';
-        infoThumb.hidden = true;
-        infoThumb.removeAttribute('src');
+        if (info.thumbnail) {
+          infoThumb.src = info.thumbnail;
+          infoThumb.hidden = false;
+        } else {
+          infoThumb.hidden = true;
+          infoThumb.removeAttribute('src');
+        }
       } else {
         infoTitle.textContent = info.title;
         infoType.textContent = 'Single video';

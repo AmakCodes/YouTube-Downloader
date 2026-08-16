@@ -172,6 +172,24 @@ def clean_error(msg: str) -> str:
     return ANSI_RE.sub("", str(msg)).strip()
 
 
+class _ErrorCollectingLogger:
+    """Passed as yt-dlp's `logger` so that errors which would otherwise be
+    silently swallowed by ignoreerrors=True (needed for playlists) still
+    get captured and shown to the user, instead of only being visible in
+    the server's own logs."""
+    def __init__(self):
+        self.errors = []
+
+    def debug(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        self.errors.append(clean_error(msg))
+
+
 def is_playlist_url(url: str) -> bool:
     lowered = url.lower()
     return any(p in lowered for p in ("list=", "playlist", "&list"))
@@ -516,11 +534,29 @@ def api_fetch_info():
         count = len(entries)
         if count == 10 and info.get("playlist_count"):
             count = info["playlist_count"]
+
+        # extract_flat playlists don't reliably have a top-level
+        # "thumbnail" string — fall back to the playlist's own
+        # "thumbnails" list, then to the first video's thumbnail.
+        thumbnail = info.get("thumbnail")
+        if not thumbnail:
+            thumbs = info.get("thumbnails") or []
+            if thumbs:
+                thumbnail = thumbs[-1].get("url")
+        if not thumbnail and entries:
+            first = entries[0] or {}
+            thumbnail = first.get("thumbnail")
+            if not thumbnail:
+                first_thumbs = first.get("thumbnails") or []
+                if first_thumbs:
+                    thumbnail = first_thumbs[-1].get("url")
+
         payload = {
             "is_playlist": True,
             "title": info.get("title", "Unknown Playlist"),
             "uploader": info.get("uploader", "Unknown Channel"),
             "video_count": count,
+            "thumbnail": thumbnail,
         }
     else:
         est_size = estimate_filesize(info, quality)
@@ -627,6 +663,8 @@ def _run_download(job_id, url, quality, playlist):
             "write_annotations": False,
         })
         ydl_opts.update(format_opts)
+        error_logger = _ErrorCollectingLogger()
+        ydl_opts["logger"] = error_logger
         if quality == "audio":
             ydl_opts["postprocessors"] = [{
                 "key": "FFmpegExtractAudio",
@@ -672,8 +710,22 @@ def _run_download(job_id, url, quality, playlist):
                     continue
                 finished_files.append({"name": Path(p).name, "relpath": str(relpath)})
 
-            update_job(job_id, status="complete", message="Download complete!", percentage=100.0,
-                       done=True, result={"folder": str(download_dir), "files": finished_files})
+            if not finished_files:
+                # ignoreerrors=True (set in ydl_common_opts, needed so one
+                # broken video doesn't abort an entire playlist) means
+                # yt-dlp can swallow every single failure and return
+                # normally with nothing actually downloaded. Silently
+                # reporting "complete" in that case is misleading — treat
+                # zero output files as a real failure instead, and surface
+                # whatever yt-dlp actually logged via error_logger so the
+                # user doesn't have to go dig through Render's logs.
+                detail = "; ".join(error_logger.errors[:3]) if error_logger.errors else \
+                    "every video may have been unavailable, private, or hit a format issue"
+                update_job(job_id, status="error", message="Download failed",
+                           error=f"No files were downloaded — {detail}", done=True)
+            else:
+                update_job(job_id, status="complete", message="Download complete!", percentage=100.0,
+                           done=True, result={"folder": str(download_dir), "files": finished_files})
     except Exception as e:
         job = get_job(job_id)
         if not job["cancelled"]:
