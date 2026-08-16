@@ -24,7 +24,7 @@ import threading
 from pathlib import Path
 
 from flask import Flask, render_template, request, jsonify, send_from_directory, abort, Response, stream_with_context
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit, parse_qsl, urlencode
 
 try:
     import yt_dlp
@@ -192,8 +192,43 @@ class _ErrorCollectingLogger:
 
 
 def is_playlist_url(url: str) -> bool:
-    lowered = url.lower()
-    return any(p in lowered for p in ("list=", "playlist", "&list"))
+    """True only for URLs that represent a real playlist the user wants
+    downloaded in full.
+
+    YouTube tacks a `list=RD…&start_radio=1` (or similar) onto a normal
+    watch URL whenever a video is opened via autoplay/"up next"/Mix —
+    that's an algorithmic queue attached to a single video, not a
+    playlist anyone asked to save. A URL with both `v=` (a specific
+    video) and a Mix-style list id (`RD…`) should be treated as a single
+    video; only a genuine playlist id (e.g. `PL…`, `UU…`, `LL…`, `WL`)
+    — or a URL with no `v=` at all, i.e. a bare playlist link — counts
+    as a playlist here.
+    """
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query))
+    list_id = query.get("list", "")
+    if "v" in query and list_id.lower().startswith("rd"):
+        return False
+    if "list" in query:
+        return True
+    return "playlist" in url.lower()
+
+
+def strip_mix_params(url: str) -> str:
+    """For a single-video URL that also carries a Mix/Radio queue
+    (list=RD…, start_radio=1, index=…), drop those params before handing
+    the URL to yt-dlp — otherwise yt-dlp's youtube:tab extractor still
+    tries to resolve the attached mix (and can fail auth-check on it)
+    even though is_playlist_url() correctly decided this is just one
+    video. Leaves real playlist URLs untouched."""
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query))
+    if "v" in query and "list" in query:
+        query.pop("list", None)
+        query.pop("start_radio", None)
+        query.pop("index", None)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+    return url
 
 
 def sanitize_filename(name: str) -> str:
@@ -530,6 +565,8 @@ def api_fetch_info():
         url = "https://" + url
 
     playlist = is_playlist_url(url)
+    if not playlist:
+        url = strip_mix_params(url)
     opts = ydl_common_opts()
     if playlist:
         opts.update({"extract_flat": True, "playlistend": 10})
@@ -602,6 +639,8 @@ def api_download():
         return jsonify({"error": "Unknown quality option"}), 400
 
     playlist = is_playlist_url(url)
+    if not playlist:
+        url = strip_mix_params(url)
     job_id = new_job("playlist" if playlist else "video")
 
     thread = threading.Thread(target=_run_download, args=(job_id, url, quality, playlist), daemon=True)
@@ -669,6 +708,7 @@ def api_direct_download():
         return jsonify({"error": "Direct streaming only supports single videos — use the regular download for playlists."}), 400
     if not check_ffmpeg():
         return jsonify({"error": "FFmpeg isn't available on this server — direct streaming needs it."}), 400
+    url = strip_mix_params(url)
 
     opts = ydl_common_opts()
     opts["format"] = build_direct_stream_format(quality)
