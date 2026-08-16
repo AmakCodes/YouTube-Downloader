@@ -17,7 +17,9 @@ import re
 import time
 import uuid
 import json
+import queue
 import shutil
+import zipfile
 import platform
 import subprocess
 import threading
@@ -767,6 +769,179 @@ def api_direct_download():
     return Response(
         stream_with_context(generate()),
         mimetype=mimetype,
+        headers={"Content-Disposition": disposition, "Cache-Control": "no-store"},
+    )
+
+
+PLAYLIST_ZIP_LIMIT = 100  # sane cap so one request can't try to zip a 5,000-video channel dump
+
+
+class _QueueWriterStream:
+    """Write-only, forward-only file-like object for zipfile.ZipFile to
+    write into. Instead of buffering, every write() pushes its bytes onto
+    a bounded queue that the Flask response generator drains on the other
+    end — the queue's maxsize is what gives this backpressure, so a
+    multi-gigabyte playlist can't balloon the server's memory just
+    because the client's connection is slow."""
+    def __init__(self, q: "queue.Queue", chunk_size: int = 64 * 1024):
+        self._q = q
+        self._pos = 0
+        self._chunk_size = chunk_size
+
+    def write(self, data):
+        if not data:
+            return 0
+        mv = memoryview(data)
+        for i in range(0, len(mv), self._chunk_size):
+            self._q.put(bytes(mv[i:i + self._chunk_size]))
+        self._pos += len(data)
+        return len(data)
+
+    def tell(self):
+        return self._pos
+
+    def flush(self):
+        pass
+
+
+def _build_playlist_zip(q: "queue.Queue", entry_urls: list, quality: str):
+    """Runs in a background thread. Resolves and muxes each playlist
+    video one at a time (same ffmpeg-pipe approach as the single-video
+    route) and writes each straight into its own zip entry via zipfile's
+    streaming write mode — nothing is fully buffered in memory or
+    written to disk at any point. Videos that fail to resolve or
+    download are skipped rather than aborting the whole zip, since the
+    response has already started streaming by the time this runs and
+    there's no way to report a partial failure back to the browser.
+    """
+    try:
+        zf = zipfile.ZipFile(_QueueWriterStream(q), mode="w", allowZip64=True)
+        used_names = set()
+        for idx, entry_url in enumerate(entry_urls, start=1):
+            try:
+                opts = ydl_common_opts()
+                opts["format"] = build_direct_stream_format(quality)
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(entry_url, download=False)
+            except Exception:
+                continue
+            if not info:
+                continue
+
+            title = sanitize_filename(info.get("title") or f"video {idx}") or f"video {idx}"
+            ext = "mp3" if quality == "audio" else "mp4"
+            name = f"{idx:02d} - {title}.{ext}"
+            n = 1
+            while name in used_names:
+                n += 1
+                name = f"{idx:02d} - {title} ({n}).{ext}"
+            used_names.add(name)
+
+            requested = info.get("requested_formats")
+            cmd = ["ffmpeg", "-loglevel", "error", "-y"]
+            if requested:
+                cmd += _ffmpeg_input_args(requested[0])
+                cmd += _ffmpeg_input_args(requested[1])
+                cmd += ["-map", "0:v:0", "-map", "1:a:0"]
+            else:
+                cmd += _ffmpeg_input_args(info)
+            if quality == "audio":
+                cmd += ["-vn", "-c:a", "libmp3lame", "-q:a", "2", "-f", "mp3", "pipe:1"]
+            else:
+                cmd += ["-c", "copy", "-movflags", "frag_keyframe+empty_moov+faststart", "-f", "mp4", "pipe:1"]
+
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            except Exception:
+                continue
+
+            try:
+                with zf.open(name, mode="w", force_zip64=True) as zentry:
+                    while True:
+                        chunk = proc.stdout.read(1024 * 64)
+                        if not chunk:
+                            break
+                        zentry.write(chunk)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.stdout.close()
+        zf.close()
+    except Exception:
+        pass
+    finally:
+        q.put(None)  # sentinel: tells the response generator there's no more data
+
+
+@app.route("/api/direct-download-playlist")
+def api_direct_download_playlist():
+    """Stream an entire playlist to the browser as a single .zip — the
+    multi-file counterpart to /api/direct-download. Browsers block or
+    prompt-flood a page that tries to trigger several automatic
+    downloads at once, so instead of one file per video, this wraps the
+    whole playlist in one zip archive that's built and streamed on the
+    fly (see _build_playlist_zip / _QueueWriterStream above) — still no
+    intermediate file ever touches the server's disk.
+
+    Videos are processed one at a time, not concurrently, so this is
+    slower than the regular playlist download for anything but a short
+    playlist. There's also no progress bar once streaming starts — same
+    trade-off as the single-video direct-download route.
+    """
+    url = (request.args.get("url") or "").strip()
+    quality = request.args.get("quality", "best")
+    if not url:
+        return jsonify({"error": "Please enter a YouTube URL"}), 400
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    if quality not in QUALITY_FORMATS:
+        return jsonify({"error": "Unknown quality option"}), 400
+    if not is_playlist_url(url):
+        return jsonify({"error": "That's not a playlist URL — use the regular direct-download for a single video."}), 400
+    if not check_ffmpeg():
+        return jsonify({"error": "FFmpeg isn't available on this server — direct streaming needs it."}), 400
+
+    try:
+        info_opts = ydl_common_opts()
+        info_opts.update({"extract_flat": True, "playlistend": PLAYLIST_ZIP_LIMIT})
+        with yt_dlp.YoutubeDL(info_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        return jsonify({"error": clean_error(e)}), 400
+
+    entries_raw = (info or {}).get("entries") or []
+    entry_urls = []
+    for e in entries_raw:
+        if not e:
+            continue
+        vid_url = e.get("url") or e.get("webpage_url") or e.get("id")
+        if not vid_url:
+            continue
+        if not vid_url.startswith(("http://", "https://")):
+            vid_url = f"https://www.youtube.com/watch?v={vid_url}"
+        entry_urls.append(vid_url)
+
+    if not entry_urls:
+        return jsonify({"error": "Couldn't find any videos in that playlist"}), 400
+
+    zip_title = sanitize_filename(info.get("title") or "playlist") or "playlist"
+
+    q = queue.Queue(maxsize=64)
+    worker = threading.Thread(target=_build_playlist_zip, args=(q, entry_urls, quality), daemon=True)
+    worker.start()
+
+    def generate():
+        while True:
+            chunk = q.get()
+            if chunk is None:
+                break
+            yield chunk
+
+    ascii_fallback = zip_title.encode("ascii", "ignore").decode() or "playlist"
+    disposition = f"attachment; filename=\"{ascii_fallback}.zip\"; filename*=UTF-8''{quote(zip_title)}.zip"
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/zip",
         headers={"Content-Disposition": disposition, "Cache-Control": "no-store"},
     )
 

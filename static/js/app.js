@@ -191,8 +191,36 @@
   // ---------- download lifecycle ----------
 
   function isPlaylistUrl(u) {
-    const lowered = (u || '').toLowerCase();
-    return lowered.includes('list=') || lowered.includes('playlist');
+    let query;
+    try {
+      query = new URL(u).searchParams;
+    } catch (e) {
+      return /[?&]list=/i.test(u || '') || /playlist/i.test(u || '');
+    }
+    const listId = (query.get('list') || '').toLowerCase();
+    // A Mix/Radio queue (list=RD…) tacked onto a specific video isn't a
+    // playlist the user asked to save — treat it as a single video,
+    // matching is_playlist_url() on the backend.
+    if (query.has('v') && listId.startsWith('rd')) return false;
+    if (query.has('list')) return true;
+    return /playlist/i.test(u || '');
+  }
+
+  function startDirectPlaylistDownload(url) {
+    // Playlists can't stream file-by-file (browsers block/flood-prompt
+    // multiple simultaneous auto-downloads), so the whole playlist comes
+    // down as one .zip, built and streamed on the fly server-side.
+    // Slower than the regular playlist download since videos are
+    // processed one at a time, and there's no progress bar once it starts.
+    statusLine.textContent = 'Zipping playlist for direct download — this can take a while, check your browser downloads.';
+    setActiveIndicators(false);
+    const params = new URLSearchParams({ url, quality: qualitySelect.value });
+    const a = document.createElement('a');
+    a.href = `/api/direct-download-playlist?${params.toString()}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    showToast('Streaming playlist as a zip — this can take a while', 'success');
   }
 
   function startDirectDownload(url) {
@@ -216,11 +244,11 @@
 
     if (directStreamToggle && directStreamToggle.checked) {
       if (isPlaylistUrl(url)) {
-        showToast('Direct streaming only supports single videos — using the regular download for this playlist.', 'default');
+        startDirectPlaylistDownload(url);
       } else {
         startDirectDownload(url);
-        return;
       }
+      return;
     }
 
     resetProgress();
