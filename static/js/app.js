@@ -32,6 +32,7 @@
   const btnDownload = $('btn-download');
   const btnPause = $('btn-pause');
   const btnCancel = $('btn-cancel');
+  const directStreamToggle = $('direct-stream-toggle');
 
   const btnRefresh = $('btn-refresh');
   const downloadsBody = $('downloads-body');
@@ -189,9 +190,38 @@
 
   // ---------- download lifecycle ----------
 
+  function isPlaylistUrl(u) {
+    const lowered = (u || '').toLowerCase();
+    return lowered.includes('list=') || lowered.includes('playlist');
+  }
+
+  function startDirectDownload(url) {
+    // A plain link click (not fetch) so the browser handles the response
+    // as a native file download via Content-Disposition — no job id, no
+    // progress polling, no server-side staging.
+    statusLine.textContent = 'Streaming straight to your device — check your browser downloads.';
+    setActiveIndicators(false);
+    const params = new URLSearchParams({ url, quality: qualitySelect.value });
+    const a = document.createElement('a');
+    a.href = `/api/direct-download?${params.toString()}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    showToast('Streaming straight to your device', 'success');
+  }
+
   async function startDownload() {
     const url = normalizeUrl(urlInput.value);
     if (!url) { showToast('Enter a YouTube URL first', 'error'); return; }
+
+    if (directStreamToggle && directStreamToggle.checked) {
+      if (isPlaylistUrl(url)) {
+        showToast('Direct streaming only supports single videos — using the regular download for this playlist.', 'default');
+      } else {
+        startDirectDownload(url);
+        return;
+      }
+    }
 
     resetProgress();
     btnDownload.disabled = true;

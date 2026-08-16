@@ -23,7 +23,8 @@ import subprocess
 import threading
 from pathlib import Path
 
-from flask import Flask, render_template, request, jsonify, send_from_directory, abort
+from flask import Flask, render_template, request, jsonify, send_from_directory, abort, Response, stream_with_context
+from urllib.parse import quote
 
 try:
     import yt_dlp
@@ -596,6 +597,128 @@ def api_download():
     thread = threading.Thread(target=_run_download, args=(job_id, url, quality, playlist), daemon=True)
     thread.start()
     return jsonify({"job_id": job_id})
+
+
+def build_direct_stream_format(quality: str) -> str:
+    """Format selector for direct-to-browser streaming. Same idea as
+    build_format_opts() above, but prefers an mp4 video + m4a audio pair
+    specifically — ffmpeg then copies both streams straight into an mp4
+    container without re-encoding (fast, low CPU). Falls back to
+    whatever's available (e.g. vp9/opus) if no mp4 pair exists at the
+    requested quality — ffmpeg still muxes it, it's just a bit slower."""
+    if quality == "audio":
+        return "bestaudio/best"
+    cap = QUALITY_HEIGHT_CAPS.get(quality)
+    height = f"[height<={cap}]" if cap else ""
+    return f"bv*{height}[ext=mp4]+ba[ext=m4a]/bv*{height}+ba/b{height}"
+
+
+def _ffmpeg_input_args(fmt: dict) -> list:
+    """-headers/-i pair for one ffmpeg input, forwarding whatever headers
+    yt-dlp resolved for that stream (User-Agent, and Cookie if cookies.txt
+    was used) so YouTube's CDN accepts the request the same way it would
+    from yt-dlp itself. Also asks ffmpeg to ride out a dropped connection
+    instead of failing the whole stream partway through."""
+    headers = fmt.get("http_headers") or {}
+    args = []
+    if headers:
+        header_str = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+        args += ["-headers", header_str]
+    args += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-i", fmt["url"]]
+    return args
+
+
+@app.route("/api/direct-download")
+def api_direct_download():
+    """Stream a single video straight to the browser — no file is ever
+    written to the server's disk. yt-dlp resolves the direct CDN URL(s)
+    for the requested quality; ffmpeg then reads straight from those
+    URLs and muxes/transcodes on the fly, writing its output to stdout,
+    which we pipe straight into the HTTP response as it's produced.
+
+    GET on purpose, not POST: this needs to be a plain link/navigation
+    so the browser treats the response as a normal file download
+    (via Content-Disposition: attachment) instead of something the page
+    has to fetch() and turn into a Blob itself.
+
+    Only single videos are supported here. Playlists keep using the
+    regular stage-then-serve /api/download flow — kicking off several
+    simultaneous browser downloads reliably is a separate problem this
+    route doesn't try to solve. There's also no progress bar for this
+    path: the browser's own download UI takes over once streaming starts.
+    """
+    url = (request.args.get("url") or "").strip()
+    quality = request.args.get("quality", "best")
+    if not url:
+        return jsonify({"error": "Please enter a YouTube URL"}), 400
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    if quality not in QUALITY_FORMATS:
+        return jsonify({"error": "Unknown quality option"}), 400
+    if is_playlist_url(url):
+        return jsonify({"error": "Direct streaming only supports single videos — use the regular download for playlists."}), 400
+    if not check_ffmpeg():
+        return jsonify({"error": "FFmpeg isn't available on this server — direct streaming needs it."}), 400
+
+    opts = ydl_common_opts()
+    opts["format"] = build_direct_stream_format(quality)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        return jsonify({"error": clean_error(e)}), 400
+    if not info:
+        return jsonify({"error": "Failed to fetch video information"}), 400
+
+    title = sanitize_filename(info.get("title") or "video") or "video"
+
+    # requested_formats = separate video-only + audio-only streams that
+    # need muxing together (the normal case for 720p+). Its absence means
+    # yt-dlp resolved a single pre-muxed (or audio-only) format instead.
+    requested = info.get("requested_formats")
+    cmd = ["ffmpeg", "-loglevel", "error", "-y"]
+    if requested:
+        cmd += _ffmpeg_input_args(requested[0])
+        cmd += _ffmpeg_input_args(requested[1])
+        cmd += ["-map", "0:v:0", "-map", "1:a:0"]
+    else:
+        cmd += _ffmpeg_input_args(info)
+
+    if quality == "audio":
+        filename = f"{title}.mp3"
+        mimetype = "audio/mpeg"
+        cmd += ["-vn", "-c:a", "libmp3lame", "-q:a", "2", "-f", "mp3", "pipe:1"]
+    else:
+        filename = f"{title}.mp4"
+        mimetype = "video/mp4"
+        cmd += ["-c", "copy", "-movflags", "frag_keyframe+empty_moov+faststart", "-f", "mp4", "pipe:1"]
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        return jsonify({"error": f"Could not start ffmpeg: {clean_error(e)}"}), 500
+
+    def generate():
+        try:
+            while True:
+                chunk = proc.stdout.read(1024 * 64)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            # Covers both a finished stream and a client that disconnected
+            # mid-download — either way, don't leave ffmpeg running.
+            if proc.poll() is None:
+                proc.kill()
+            proc.stdout.close()
+
+    ascii_fallback = filename.encode("ascii", "ignore").decode() or ("video.mp3" if quality == "audio" else "video.mp4")
+    disposition = f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
+    return Response(
+        stream_with_context(generate()),
+        mimetype=mimetype,
+        headers={"Content-Disposition": disposition, "Cache-Control": "no-store"},
+    )
 
 
 @app.route("/api/progress/<job_id>")

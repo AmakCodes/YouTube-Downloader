@@ -181,6 +181,14 @@ yt-dlp --cookies-from-browser chrome --cookies cookies.txt https://youtube.com/w
 <p class="hint" style="margin-top: 8px;">
   <span style="color: var(--warn);">⚠️</span> Cookies expire after a few days. Re-upload if downloads stop working.
 </p>
+
+<label class="field-label" style="display:flex; align-items:center; gap:8px; margin-top:14px; cursor:pointer;">
+  <input id="direct-stream-toggle" type="checkbox">
+  Stream straight to my device
+</label>
+<p class="hint" id="direct-stream-hint">
+  Skips the server-side staging step — faster, but no downloads-history entry, no pause/resume, and no progress bar (your browser's own download UI takes over). Single videos only; playlists always use the regular flow.
+</p>
   </div>
 
     </section>
